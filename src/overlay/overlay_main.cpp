@@ -140,6 +140,16 @@ struct Page {
 
 static void StateText(const QlhsStatus &s, bool stale, std::wstring &title, std::wstring &sub, uint32_t &color) {
   if (stale) { title = L"Driver not running"; sub = L"The QuestLHSync driver isn't updating. Restart SteamVR."; color = col::red; return; }
+  if (s.calib_state == 1) {
+    title = L"Calibrating";
+    color = col::amber;
+    int p = s.calib_pct;
+    if (p < 25) sub = L"Hold a tracker or controller firmly on the headset, and slowly look left.";
+    else if (p < 50) sub = L"Now look right. Keep it from slipping on the headset.";
+    else if (p < 75) sub = L"Now look up.";
+    else sub = L"Now look down.";
+    return;
+  }
   switch (s.state) {
     case QLHS_NO_HMD:
       title = L"Waiting for a Quest or Steam Frame";
@@ -267,6 +277,9 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
   row(x3, top + 168, L"Sightings used", has ? F(L"%d", s.nfit) : L"—");
   row(x3, top + 202, L"Since acquired", s.locked_for >= 0 ? Dur(s.locked_for) : L"—");
   row(x3, top + 236, L"Settling", s.lag_cm > 0.05 ? F(L"%.1f cm to go", s.lag_cm) : has ? L"done" : L"—");
+  row(x3, top + 270, L"Calibration",
+      s.calib_state == 1 ? F(L"%d%%", s.calib_pct)
+                         : s.calib_state == 2 ? F(L"%.2f°   %.1f cm", s.calib_deg, s.calib_cm) : L"none");
 
   // log
   int ly = top + ch + 20, lh = 150;
@@ -284,10 +297,17 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
   // buttons
   pg.buttons.clear();
   int by = H - 66, bh = 46;
-  pg.buttons.push_back({48, by, 240, bh, s.paused ? QLHS_CMD_RESUME : QLHS_CMD_PAUSE,
+  pg.buttons.push_back({48, by, 230, bh, s.paused ? QLHS_CMD_RESUME : QLHS_CMD_PAUSE,
                         s.paused ? L"Resume corrections" : L"Pause corrections", s.paused != 0});
-  pg.buttons.push_back({304, by, 210, bh, s.recording ? QLHS_CMD_RECORD_OFF : QLHS_CMD_RECORD_ON,
+  pg.buttons.push_back({290, by, 200, bh, s.recording ? QLHS_CMD_RECORD_OFF : QLHS_CMD_RECORD_ON,
                         s.recording ? L"Stop recording" : L"Record session", false});
+  if (s.calib_state == 1)
+    pg.buttons.push_back({502, by, 160, bh, QLHS_CMD_CALIBRATE_CANCEL, F(L"Cancel  %d%%", s.calib_pct), false});
+  else
+    pg.buttons.push_back({502, by, 170, bh, QLHS_CMD_CALIBRATE,
+                          s.calib_state == 2 ? L"Recalibrate" : L"Calibrate", false});
+  if (s.calib_state == 2)
+    pg.buttons.push_back({684, by, 110, bh, QLHS_CMD_CALIBRATE_CLEAR, L"Clear", false});
   for (size_t i = 0; i < pg.buttons.size(); i++) {
     auto &b = pg.buttons[i];
     bool hov = (int)i == pg.hover;

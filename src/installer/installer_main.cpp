@@ -5,6 +5,7 @@
 // %LOCALAPPDATA%\QuestLHSync\installed.json so it can offer updates.
 #include <windows.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <tlhelp32.h>
 #include <winhttp.h>
 #undef small  // rpcndr.h (via windows.h): "#define small char"
@@ -30,6 +31,7 @@ namespace fs = std::filesystem;
 static const int W = 960, H = 660;  // page size at 96 dpi
 static double g_k = 1;                      // dpi scale
 static const wchar_t *RELEASES = L"https://github.com/CreoleVR/QuestLHSync/releases";
+static const wchar_t *kVersion = L"1.14-calibrate";
 
 // ---------------------------------------------------------------- drawing (same look as the dashboard page)
 struct Canvas {
@@ -709,17 +711,23 @@ static void Check() {
   });
 }
 
-static void Install(const std::wstring &tag) {
-  RunBg([tag] {
+// the driver zip is compiled into this exe; nothing is downloaded from GitHub
+static std::vector<uint8_t> BundledZip() {
+  HRSRC r = FindResourceW(nullptr, MAKEINTRESOURCEW(1), RT_RCDATA);
+  if (!r) throw Fail{L"this installer has no driver package inside it"};
+  HGLOBAL g = LoadResource(nullptr, r);
+  DWORD n = SizeofResource(nullptr, r);
+  const uint8_t *p = (const uint8_t *)LockResource(g);
+  if (!p || !n) throw Fail{L"this installer has no driver package inside it"};
+  return std::vector<uint8_t>(p, p + n);
+}
+
+static void Install() {
+  RunBg([] {
     VrPathReg();  // fail early if SteamVR is missing
-    Say(L"Downloading " + tag + L"…");
-    std::vector<uint8_t> zip;
-    Http(std::wstring(RELEASES) + L"/download/" + tag + L"/" + PackageName(tag), true,
-         [&](const uint8_t *d, size_t n, uint64_t total) {
-           zip.insert(zip.end(), d, d + n);
-           if (total) SetProgress((int)std::min<uint64_t>(99, zip.size() * 100 / total));
-         });
-    if (zip.empty()) throw Fail{L"download failed: " + PackageName(tag) + L" not found"};
+    Say(L"Reading the bundled driver…");
+    std::vector<uint8_t> zip = BundledZip();
+    SetProgress(30);
     StopSteamVr();
     Say(L"Installing…");
     std::error_code ec;
@@ -730,11 +738,10 @@ static void Install(const std::wstring &tag) {
       RunReg(L"removedriver", old);
       Say(L"Unregistered the older copy in " + old.wstring() + L" (its files are left as they are)");
     }
-    std::string utf8(WideCharToMultiByte(CP_UTF8, 0, tag.c_str(), (int)tag.size(), nullptr, 0, nullptr, nullptr), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, tag.c_str(), (int)tag.size(), utf8.data(), (int)utf8.size(), nullptr, nullptr);
-    std::ofstream(g_state) << "{\"version\":\"" << utf8 << "\"}";
+    std::ofstream(g_state) << "{\"version\":\"1.14-calibrate\"}";
     SetProgress(100);
-    Say(L"Installed " + tag + L". Start SteamVR.", col::green);
+    Say(L"PC driver installed. Start SteamVR. The Quest or Frame app still comes from the original QuestLHSync release.",
+        col::green);
   });
 }
 
@@ -779,9 +786,9 @@ static void Draw() {
   p.Rect(0, 0, W, H, col::bg);
 
   // header
-  int tw = p.Text(48, 34, L"QuestLHSync", h1, col::text);
-  p.Text(48 + tw + 14, 50, L"by CreoleVR", h2, col::faint);
-  p.Text(50, 88, L"Installer for the SteamVR driver", small, col::dim);
+  int tw = p.Text(48, 34, L"QuestLHSync Calibrate", h1, col::text);
+  p.Text(48 + tw + 14, 50, L"PC driver", h2, col::faint);
+  p.Text(50, 88, L"From QuestLHSync and OpenVR-SpaceSync. The headset app is the original release.", small, col::dim);
 
   std::wstring title;
   uint32_t sc;
@@ -824,10 +831,10 @@ static void Draw() {
   row(x1, top + 168, L"Status", installed.empty() ? L"not installed" : outdated ? L"update available" : latest.empty() ? dash : L"up to date",
       outdated ? col::amber : col::text);
 
-  p.Text(x2 + 22, top + 18, L"LATEST RELEASE", label, col::faint);
-  p.Text(x2 + 22, top + 44, latest.empty() ? dash : latest, big, !latest.empty() && !outdated ? col::green : col::text, 0, cw - 44);
-  row(x2, top + 100, L"Source", L"GitHub releases");
-  row(x2, top + 134, L"Package", latest.empty() ? dash : PackageName(latest));
+  p.Text(x2 + 22, top + 18, L"THIS INSTALLER", label, col::faint);
+  p.Text(x2 + 22, top + 44, kVersion, big, col::text, 0, cw - 44);
+  row(x2, top + 100, L"Headset app", L"original QuestLHSync");
+  row(x2, top + 134, L"Package", L"bundled in this exe");
   row(x2, top + 168, L"Registers via", L"vrpathreg");
 
   // log
@@ -849,12 +856,12 @@ static void Draw() {
   // buttons
   g_buttons.clear();
   int by = H - 66, bh = 46;
-  std::wstring main_label = installed.empty() ? L"Install" : outdated ? L"Update to " + latest : L"Reinstall";
-  g_buttons.push_back({48, by, outdated ? 260 : 200, bh, 0, main_label, installed.empty() || outdated, !busy && !latest.empty()});
+  std::wstring main_label = installed.empty() ? L"Install" : L"Reinstall";
+  g_buttons.push_back({48, by, 200, bh, 0, main_label, true, !busy});
   int x = 48 + g_buttons[0].w + 16;
   g_buttons.push_back({x, by, 170, bh, 1, L"Uninstall", false, !busy && !installed.empty()});
   x += 170 + 16;
-  g_buttons.push_back({x, by, 250, bh, 2, L"Check for updates", false, !busy});
+  g_buttons.push_back({x, by, 280, bh, 2, L"Headset files (original)", false, !busy});
   for (size_t i = 0; i < g_buttons.size(); i++) {
     auto &b = g_buttons[i];
     uint32_t fill = !b.enabled ? col::card : b.primary ? (int)i == g_hover ? 0x7aa0ff : col::blue : (int)i == g_hover ? col::line : col::card2;
@@ -873,17 +880,14 @@ static int HitTest(LPARAM lp) {
 }
 
 static void Click(int id) {
-  if (id == 2) return Check();
-  if (SteamVrRunning()) g_svr = true;  // Install/Uninstall stop it themselves
-  if (id == 0) {
-    std::wstring tag;
-    {
-      std::lock_guard<std::mutex> g(S.m);
-      tag = S.latest;
-    }
-    return Install(tag);
+  if (id == 2) {
+    ShellExecuteW(nullptr, L"open", RELEASES, nullptr, nullptr, SW_SHOWNORMAL);
+    return;
   }
-  if (MessageBoxW(g_hwnd, L"Uninstall the QuestLHSync driver?", L"QuestLHSync", MB_YESNO | MB_ICONQUESTION) == IDYES)
+  if (SteamVrRunning()) g_svr = true;  // Install/Uninstall stop it themselves
+  if (id == 0) return Install();
+  if (MessageBoxW(g_hwnd, L"Uninstall the QuestLHSync PC driver? The headset app is not removed.", L"QuestLHSync Calibrate",
+                  MB_YESNO | MB_ICONQUESTION) == IDYES)
     Uninstall();
 }
 
@@ -951,13 +955,17 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
   RECT rc{0, 0, g_cw, g_ch};
   AdjustWindowRectExForDpi(&rc, style, FALSE, 0, GetDpiForSystem());
   int ww = rc.right - rc.left, wh = rc.bottom - rc.top;
-  g_hwnd = CreateWindowW(wc.lpszClassName, L"QuestLHSync Installer", style, (GetSystemMetrics(SM_CXSCREEN) - ww) / 2,
+  g_hwnd = CreateWindowW(wc.lpszClassName, L"QuestLHSync Calibrate", style, (GetSystemMetrics(SM_CXSCREEN) - ww) / 2,
                          (GetSystemMetrics(SM_CYSCREEN) - wh) / 2, ww, wh, nullptr, nullptr, hi, nullptr);
   BOOL dark = TRUE;
   DwmSetWindowAttribute(g_hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
   SetTimer(g_hwnd, 1, 1000, nullptr);
   ShowWindow(g_hwnd, show);
-  Check();
+  {
+    std::lock_guard<std::mutex> g(S.m);
+    S.latest = kVersion;
+  }
+  Say(L"PC driver only. For a Quest or Steam Frame, install that half from the original QuestLHSync release (Headset files).");
 
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

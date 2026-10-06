@@ -97,6 +97,11 @@ constexpr double kBodyNear = 1.0, kBodyGap = 1.0;  // m
 // ... or their motion does (Sync::BodyMotion): when the head went kBodyMoved, and they follow it one way by kBodyCorr
 // and the other way not (a fit and its mirror move them opposite ways)
 constexpr double kBodyMoved = 2.0, kBodyCorr = 0.2;  // m, correlation
+// Two base stations facing each other fit about as well with their places swapped, which turns the alignment
+// ~180 deg and puts every tracker across the room. Once an alignment has held for kHold, that average is kept: a
+// solution this far from it in yaw, with the stations kFlipApart away, is that swap and is not taken. A pose break
+// or a new reference frame starts the average over, so a real change of the headset's space can still be acquired.
+constexpr double kFlipYaw = 120.0 / kDeg, kFlipApart = 0.50, kHold = 60.0;  // rad, m, s
 
 double RotorPeriod(int channel);  // s, a 2.0 base station on channel 1..16, else 0
 
@@ -295,6 +300,7 @@ class Solver {
   void AddFrame(double t, double g, int cam, V3 o, const M3 &R);  // every short frame; camera pose in Quest space
   void SetInImage(std::function<bool(int cam, V3 d)> f) { in_image_ = std::move(f); }
   void PoseBreak(double t);
+  void ReleaseHold();  // the reference frame changed under the held alignment
   StepStat Step(double now);
   bool has_x() const { return has_x_; }
   bool starved() const { return starved_; }
@@ -362,6 +368,11 @@ class Solver {
   double DimGate() const { return starved_ ? INLIER : -1; }
   int amb_state_ = 0;        // the mirror check's last outcome, logged when it changes
   double kept_said_ = -1e18;  // the last log of a far acquisition the worn devices turned down
+  // the alignment averaged while it held still, and (hold_) that average is trusted enough to refuse a ~180 deg swap
+  bool hold_ = false, has_avg_ = false;
+  X4 avg_{};
+  int avg_n_ = 0;
+  double hold_since_ = -1e18, flip_said_ = -1e18;
 
   Rays GetRays(double t0);
   void Support(const X4 &x, const std::vector<V3> &S, const std::vector<V3> &Z, const Rays &r, double gate, std::vector<int> &cnt) const;
@@ -386,6 +397,9 @@ class Solver {
   void CheckMirror(X4 &best, int &bs, const std::vector<V3> &S, const std::vector<V3> &Z, const Rays &r, const Rays &t,
                    double now);
   void CheckIdentity(double now, const std::vector<std::string> &keys, const std::vector<V3> &S, const std::vector<V3> &Z);
+  // true: x is a ~180 deg swap of the base stations, far from the alignment averaged so far, and is not taken
+  bool RejectFlip(const X4 &x, const std::vector<V3> &S, double now, const char *why);
+  void HoldStep(double now, bool steady);
 };
 
 // ---------------------------------------------------------------- timing

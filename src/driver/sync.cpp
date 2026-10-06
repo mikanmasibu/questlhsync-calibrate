@@ -791,6 +791,9 @@ void Solver::Reset(const X4 &x) {
   resets_++;
   anchor_ = x; has_anchor_ = true;
   id_said_.clear();
+  avg_ = x; has_avg_ = true; avg_n_ = 1;  // a new alignment: its average starts here, and has to hold again
+  hold_ = false;
+  hold_since_ = -1e18;
 }
 
 void Solver::Add(double t, V3 o, V3 d, double gt, int cam, bool bright) {
@@ -1523,6 +1526,14 @@ void Solver::PoseBreak(double t) {
   brk_ = since_ = std::max(since_, t);
   last_acq_ = -1e18;
   has_acq_x_ = false;
+  ReleaseHold();  // the headset's space may have moved under the alignment that was held
+}
+
+void Solver::ReleaseHold() {
+  hold_ = false;
+  has_avg_ = false;
+  avg_n_ = 0;
+  hold_since_ = -1e18;
 }
 
 // ================================================================ station identity
@@ -1687,10 +1698,12 @@ void Solver::CheckIdentity(double now, const std::vector<std::string> &keys, con
       say("body " + pair, Fmt("channel check: %s look the wrong way round (by %.2f), but %s: kept as it is",
                               pair.c_str(), worst, how.c_str()));
     } else if (cur > 0 && sw >= kSwapFit * cur) {
-      log_(Fmt("channel check: %s were the wrong way round (by %.2f): yaw %+.2f deg t [%.3f %.3f %.3f] support %d (was %d)",
-               pair.c_str(), worst, xs[0] * kDeg, xs[1], xs[2], xs[3], sw, cur));
-      Reset(xs);
-      has_acq_x_ = false;
+      if (!RejectFlip(xs, S, now, "channel check")) {
+        log_(Fmt("channel check: %s were the wrong way round (by %.2f): yaw %+.2f deg t [%.3f %.3f %.3f] support %d (was %d)",
+                 pair.c_str(), worst, xs[0] * kDeg, xs[1], xs[2], xs[3], sw, cur));
+        Reset(xs);
+        has_acq_x_ = false;
+      }
     } else {
       say("kept " + pair, Fmt("channel check: %s look the wrong way round (by %.2f), but the rays fit that way worse "
                               "(support %d vs %d): kept as it is", pair.c_str(), worst, sw, cur));
@@ -1740,11 +1753,11 @@ StepStat Solver::Step(double /*now*/) {
         }
       }
       FitR f = Fit(x_, S, Z, r, now, GATE, has_anchor_ ? &anchor_ : nullptr, nullptr, DimGate());
-      if (f.ok) {
+      if (f.ok && !RejectFlip(f.x, S, now, "fit")) {
         x_ = f.x;
         if (f.cond || !has_anchor_) { anchor_ = f.x; has_anchor_ = true; }
+        st.cond = f.cond;
       }
-      st.cond = f.cond;
       std::vector<int> cnt;
       Support(x_, S, Z, r, INLIER, cnt);
       Predict(x_, S, Z, P, Zq);
@@ -1799,7 +1812,7 @@ StepStat Solver::Step(double /*now*/) {
           log_(Fmt("acquisition: yaw %+.1f deg (support %d, was %d) would fit as well, but %s: the current fit stays",
                    xa[0] * kDeg, sa, cur, how.c_str()));
         }
-      } else {
+      } else if (!RejectFlip(xa, S, now, acq_forced_ ? "mirror check" : "acquisition")) {
         log_(Fmt("acquired: yaw %+.2f deg t [%.3f %.3f %.3f] support %d (%d within %.1f deg, was %d)%s", xa[0] * kDeg, xa[1],
                  xa[2], xa[3], sa, tight, TIGHT_DEG, cur, acq_forced_ ? ", by the mirror check" : ""));
         Reset(xa);
@@ -1807,8 +1820,46 @@ StepStat Solver::Step(double /*now*/) {
       }
     }
   }
+  HoldStep(now, locked && st.cond && st.has_med && st.med < 0.5 && !st.jump);
   stat_ = st; has_stat_ = true;
   return st;
+}
+
+// x turned ~180 deg from the alignment averaged so far, with the stations landing elsewhere: the two base stations
+// swapped. That puts every tracker across the room, so once the average has held it is not taken.
+bool Solver::RejectFlip(const X4 &x, const std::vector<V3> &S, double now, const char *why) {
+  if (!hold_ || !has_avg_ || !has_x_) return false;
+  double dy = std::fabs(Wrap(x[0] - avg_[0]));
+  if (dy < kFlipYaw || Apart(x, avg_, S) < kFlipApart) return false;
+  if (now - flip_said_ > 60) {
+    flip_said_ = now;
+    log_(Fmt("ignored a %.0f deg flip (%s): yaw %+.1f is far from the alignment averaged so far (yaw %+.1f), the two "
+             "base stations were taken the wrong way round", dy * kDeg, why, x[0] * kDeg, avg_[0] * kDeg));
+  }
+  return true;
+}
+
+// Fold a steady alignment into its average. After kHold of the same one, a later ~180 deg swap is refused.
+void Solver::HoldStep(double now, bool steady) {
+  if (!has_x_ || hold_) return;
+  if (!steady) { hold_since_ = -1e18; return; }
+  if (!has_avg_) { avg_ = x_; has_avg_ = true; avg_n_ = 1; hold_since_ = now; return; }
+  double dy = std::fabs(Wrap(x_[0] - avg_[0]));
+  double dt = norm(V3{x_[1] - avg_[1], x_[2] - avg_[2], x_[3] - avg_[3]});
+  if (dy > 0.35 || dt > 0.30) {  // a real change before the hold: the average follows it
+    avg_ = x_; avg_n_ = 1; hold_since_ = now;
+    return;
+  }
+  double a = 1.0 / std::min(avg_n_ + 1, 40);
+  avg_[0] = Wrap(avg_[0] + a * Wrap(x_[0] - avg_[0]));
+  for (int i = 1; i < 4; i++) avg_[i] += a * (x_[i] - avg_[i]);
+  if (avg_n_ < 1000000) avg_n_++;
+  if (hold_since_ < -1e17) hold_since_ = now;
+  if (avg_n_ >= 30 && now - hold_since_ >= kHold) {
+    hold_ = true;
+    log_(Fmt("alignment held for %.0f s around yaw %+.1f deg: a ~180 deg swap of the two base stations will be ignored",
+             now - hold_since_, avg_[0] * kDeg));
+  }
 }
 
 // The 4-DOF fit's stations tilted about pivot as well, on the same sightings. Its first gate is wide: with the frame
@@ -1933,6 +1984,7 @@ void Solver::Relevel(const X4 &x) {
   x_ = anchor_ = x;
   has_x_ = has_anchor_ = true;
   has_acq_x_ = false;  // found on the stations before the level
+  if (has_avg_) avg_ = x;  // the same alignment, in the levelled frame
 }
 
 // ================================================================ timing
@@ -2641,6 +2693,7 @@ void Sync::LayoutStep(const std::map<std::string, std::pair<V3, M3>> &raw, doubl
     log_(Fmt("lighthouse frame: base stations moved (%.0f cm off the fit): reference frame reset",
              frame_.miss() * 100));
     frame_.Update(raw);
+    solver_.ReleaseHold();
     return;
   }
   std::string left = frame_.left();
@@ -2821,6 +2874,7 @@ Transform Sync::Tick(double now) {
         sfile_.level = M3();  // SteamVR's frame as it is now: its level is found again
         sfile_.SaveAuto(Join(cfg_.dir, "stations.json"));
         log_("anchor " + sfile_.anchor + " moved: reference frame reset");
+        solver_.ReleaseHold();
       }
     }
     frame_.Update(raw);

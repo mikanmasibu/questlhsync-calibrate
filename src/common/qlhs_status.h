@@ -7,7 +7,7 @@
 #define QLHS_SHM_NAME L"Local\\QuestLHSync"
 #define QLHS_OVERLAY_MUTEX L"Local\\QuestLHSyncOverlay"
 #define QLHS_MAGIC 0x53484C51u  // "QLHS"
-#define QLHS_VERSION 2
+#define QLHS_VERSION 3
 #define QLHS_RELEASE "1.14"  // magisk/build_module.py reads it
 
 enum QlhsState : int32_t {
@@ -29,6 +29,9 @@ enum QlhsCmd : int32_t {
   QLHS_CMD_RESUME = 3,
   QLHS_CMD_RECORD_ON = 4,
   QLHS_CMD_RECORD_OFF = 5,
+  QLHS_CMD_CALIBRATE = 6,
+  QLHS_CMD_CALIBRATE_CANCEL = 7,
+  QLHS_CMD_CALIBRATE_CLEAR = 8,
 };
 
 #pragma pack(push, 8)
@@ -69,6 +72,10 @@ struct QlhsStatus {
   double locked_for;    // s since the last acquisition, < 0: never
   double lag_cm;        // applied vs solved at the head (slewing)
   int32_t recording;
+  int32_t calib_state;  // 0 none, 1 sampling, 2 a one-time correction is applied
+  int32_t calib_pct;    // 0..100 while sampling
+  double calib_deg;     // the correction's rotation
+  double calib_cm;      // how far it moves the head
   uint32_t nlog;        // messages written so far; log[i % 8]
   char log[8][120];
   volatile int32_t cmd_seq;  // overlay -> driver

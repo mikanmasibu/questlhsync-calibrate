@@ -28,6 +28,7 @@
 
 #include "../common/qlhs_status.h"
 #include "MinHook.h"
+#include "calib.h"
 #include "gravity.h"
 #include "net.h"
 #include "openvr_driver.h"
@@ -41,6 +42,7 @@ static FILE *g_logf;
 static QlhsStatus *g_st;
 static std::unique_ptr<Sync> g_sync;
 static std::unique_ptr<Gravity> g_gravity;
+static std::unique_ptr<Calibrator> g_calib;
 
 static void PushStatusLog(const std::string &s);
 
@@ -154,7 +156,9 @@ static bool Apply(uint32_t id, vr::DriverPose_t &p) {
       double pos[3];
       vr::HmdQuaternion_t q;
       RawPose(p, pos, q);
-      g_sync->OnHmdPose(QpcNow() + p.poseTimeOffset, Quat{q.w, q.x, q.y, q.z}, V3{pos[0], pos[1], pos[2]});
+      double ht = QpcNow() + p.poseTimeOffset;
+      g_sync->OnHmdPose(ht, Quat{q.w, q.x, q.y, q.z}, V3{pos[0], pos[1], pos[2]});
+      if (g_calib) g_calib->OnHmd(ht, Quat{q.w, q.x, q.y, q.z}, V3{pos[0], pos[1], pos[2]});
     }
     return false;
   }
@@ -194,6 +198,23 @@ static bool Apply(uint32_t id, vr::DriverPose_t &p) {
   Rotate(xq, p.vecWorldFromDriverTranslation, wt);
   p.qWorldFromDriverRotation = Mul(xq, p.qWorldFromDriverRotation);
   for (int i = 0; i < 3; i++) p.vecWorldFromDriverTranslation[i] = wt[i] + x.t[i];
+  if (g_calib) {
+    Quat cq;
+    V3 ct;
+    if (g_calib->Read(cq, ct)) {
+      vr::HmdQuaternion_t cqq{cq.w, cq.x, cq.y, cq.z};
+      double cwt[3];
+      Rotate(cqq, p.vecWorldFromDriverTranslation, cwt);
+      p.qWorldFromDriverRotation = Mul(cqq, p.qWorldFromDriverRotation);
+      for (int i = 0; i < 3; i++) p.vecWorldFromDriverTranslation[i] = cwt[i] + ct[i];
+    }
+    if (g_calib->sampling() && d.cls != vr::TrackedDeviceClass_TrackingReference) {
+      double pos[3];
+      vr::HmdQuaternion_t q;
+      RawPose(p, pos, q);
+      g_calib->OnDevice((int)id, false, QpcNow() + p.poseTimeOffset, Quat{q.w, q.x, q.y, q.z}, V3{pos[0], pos[1], pos[2]});
+    }
+  }
   g_moved.fetch_add(1, std::memory_order_relaxed);
   return true;
 }
@@ -287,6 +308,8 @@ class Provider : public vr::IServerTrackedDeviceProvider {
     SyncConfig cfg;
     cfg.dir = dir_;
     g_sync = std::make_unique<Sync>(cfg, [](const std::string &s) { Log(s); });
+    g_calib = std::make_unique<Calibrator>(dir_ + "\\calib.json", [](const std::string &s) { Log(s); });
+    g_calib->Load();
     g_gravity = std::make_unique<Gravity>(dir_, [](const std::string &s) { Log(s); });
     g_gravity->SetRecord([](double t, const std::string &s) { if (g_sync) g_sync->Rec(t, "%s", s.c_str()); });
     link_ = std::make_unique<HeadsetLink>(
@@ -417,7 +440,7 @@ class Provider : public vr::IServerTrackedDeviceProvider {
   std::string hmd_model_, hmd_system_;
   std::string receiver_[vr::k_unMaxTrackedDeviceCount];
   double last_gravity_ = 0;
-  bool any_hmd_ = false, recording_ = false, overlay_started_ = false;
+  bool any_hmd_ = false, recording_ = false, overlay_started_ = false, calib_hold_ = false;
   int cmd_seen_ = 0;
   double started_ = 0, last_status_ = 0;
   Sync::Spots rec_spots_;  // when the recording started
@@ -533,10 +556,37 @@ class Provider : public vr::IServerTrackedDeviceProvider {
     if (s == cmd_seen_) return;
     cmd_seen_ = s;
     switch (g_st->cmd) {
-      case QLHS_CMD_PAUSE: g_sync->SetPaused(true); Log("corrections paused"); break;
-      case QLHS_CMD_RESUME: g_sync->SetPaused(false); Log("corrections resumed"); break;
+      case QLHS_CMD_PAUSE:
+        if (g_calib && g_calib->sampling()) break;
+        g_sync->SetPaused(true);
+        Log("corrections paused");
+        break;
+      case QLHS_CMD_RESUME:
+        if (g_calib && g_calib->sampling()) g_calib->Cancel();
+        calib_hold_ = false;
+        g_sync->SetPaused(false);
+        Log("corrections resumed");
+        break;
       case QLHS_CMD_RECORD_ON: SetRecording(true); break;
       case QLHS_CMD_RECORD_OFF: SetRecording(false); break;
+      case QLHS_CMD_CALIBRATE:
+        if (!g_calib || g_calib->sampling()) break;
+        if (g_st->state != QLHS_LOCKED) { Log("calibration waits until the alignment is locked"); break; }
+        if (g_st->lag_cm > 1.5) { Log("calibration waits until the alignment has settled"); break; }
+        if (g_sync->paused()) { Log("resume corrections before calibrating"); break; }
+        g_sync->SetPaused(true);
+        calib_hold_ = true;
+        g_calib->Start(QpcNow());
+        break;
+      case QLHS_CMD_CALIBRATE_CANCEL:
+        if (g_calib) g_calib->Cancel();
+        if (calib_hold_) { calib_hold_ = false; g_sync->SetPaused(false); }
+        break;
+      case QLHS_CMD_CALIBRATE_CLEAR:
+        if (g_calib && g_calib->sampling()) g_calib->Cancel();
+        if (calib_hold_) { calib_hold_ = false; g_sync->SetPaused(false); }
+        if (g_calib) g_calib->Clear();
+        break;
     }
   }
 
@@ -596,6 +646,10 @@ class Provider : public vr::IServerTrackedDeviceProvider {
     t->locked_for = s.locked_for;
     t->lag_cm = s.lag_cm;
     t->recording = recording_;
+    t->calib_state = g_calib ? g_calib->state() : 0;
+    t->calib_pct = g_calib ? g_calib->pct() : 0;
+    t->calib_deg = g_calib ? g_calib->deg() : 0;
+    t->calib_cm = g_calib ? g_calib->cm() : 0;
     {
       std::lock_guard<std::mutex> g(g_stlog_m);
       for (auto &l : g_pending_log) {
@@ -615,6 +669,10 @@ class Provider : public vr::IServerTrackedDeviceProvider {
       link_->SetWanted(g_hmd.load() >= 0);
       Stations();
       Commands();
+      if (g_calib && g_calib->Tick(now) && calib_hold_) {
+        calib_hold_ = false;
+        g_sync->SetPaused(false);
+      }
       WriteXf(g_sync->Tick(now));
       if (now - last_gravity_ >= 1) {
         last_gravity_ = now;
