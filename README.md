@@ -30,6 +30,8 @@ Wait until the dashboard says the alignment is locked and settled. Hold a tracke
 
 A correction larger than 8 degrees or 8 cm is rejected, as is a device that was not held on the headset.
 
+The PC driver follows QuestLHSync 1.16. Use the 1.16 headset package from the original release. A wired headset (Index, Vive, and other lighthouse headsets) turns this driver off. Base stations are held at the average of SteamVR's measurements (`steadyStations`, on by default). The installer sets SteamVR's `activateMultipleDrivers` to true so this driver loads beside the lighthouse driver.
+
 ## Building
 
 Visual Studio 2022 with C++:

@@ -8,7 +8,7 @@
 #define QLHS_OVERLAY_MUTEX L"Local\\QuestLHSyncOverlay"
 #define QLHS_MAGIC 0x53484C51u  // "QLHS"
 #define QLHS_VERSION 3
-#define QLHS_RELEASE "1.14"  // magisk/build_module.py reads it
+#define QLHS_RELEASE "1.16"  // magisk/build_module.py reads it
 
 enum QlhsState : int32_t {
   QLHS_STARTING = 0,
@@ -20,6 +20,7 @@ enum QlhsState : int32_t {
   QLHS_ACQUIRING,
   QLHS_LOCKED,
   QLHS_DISABLED,     // driver_questlhsync.enable is false
+  QLHS_WIRED,        // SteamVR's headset is wired, not streamed: the driver is off and the dashboard closes
 };
 
 enum QlhsCmd : int32_t {
