@@ -15,7 +15,7 @@ The code in this repository is MIT, the same license as QuestLHSync. See [LICENS
 
 **PC.** Download `QuestLHSync-Calibrate-Installer.exe` from [Releases](https://github.com/mikanmasibu/questlhsync-calibrate/releases), run it, then start SteamVR. It installs only the SteamVR driver, to `%LOCALAPPDATA%\QuestLHSync\questlhsync`, and registers it. SteamVR can be open; the installer closes it.
 
-**Quest or Steam Frame.** Not this installer. Install the headset half from the original project, then use this PC driver with it:
+**Quest or Steam Frame.** The headset software is not in this installer. Install it from the original QuestLHSync release, then use this PC driver with it:
 
 [github.com/CreoleVR/QuestLHSync/releases](https://github.com/CreoleVR/QuestLHSync/releases)
 
