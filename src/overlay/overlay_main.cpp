@@ -285,6 +285,7 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
   int ly = top + ch + 20, lh = 150;
   p.Rect(48, ly, W - 96, lh, col::card, 14);
   p.Text(70, ly + 16, L"LOG", label, col::faint);
+  p.Text(W - 70, ly + 16, L"Settings: steamvr.vrsettings → driver_questlhsync", small, col::faint, 2);
   uint32_t n = s.nlog;
   int shown = 0;
   for (uint32_t i = 0; i < 5 && i < n; i++) {
@@ -297,17 +298,18 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
   // buttons
   pg.buttons.clear();
   int by = H - 66, bh = 46;
-  pg.buttons.push_back({48, by, 230, bh, s.paused ? QLHS_CMD_RESUME : QLHS_CMD_PAUSE,
+  pg.buttons.push_back({48, by, 190, bh, s.paused ? QLHS_CMD_RESUME : QLHS_CMD_PAUSE,
                         s.paused ? L"Resume corrections" : L"Pause corrections", s.paused != 0});
-  pg.buttons.push_back({290, by, 200, bh, s.recording ? QLHS_CMD_RECORD_OFF : QLHS_CMD_RECORD_ON,
+  pg.buttons.push_back({250, by, 168, bh, s.recording ? QLHS_CMD_RECORD_OFF : QLHS_CMD_RECORD_ON,
                         s.recording ? L"Stop recording" : L"Record session", false});
   if (s.calib_state == 1)
-    pg.buttons.push_back({502, by, 160, bh, QLHS_CMD_CALIBRATE_CANCEL, F(L"Cancel  %d%%", s.calib_pct), false});
+    pg.buttons.push_back({430, by, 150, bh, QLHS_CMD_CALIBRATE_CANCEL, F(L"Cancel  %d%%", s.calib_pct), false});
   else
-    pg.buttons.push_back({502, by, 170, bh, QLHS_CMD_CALIBRATE,
+    pg.buttons.push_back({430, by, 150, bh, QLHS_CMD_CALIBRATE,
                           s.calib_state == 2 ? L"Recalibrate" : L"Calibrate", false});
   if (s.calib_state == 2)
-    pg.buttons.push_back({684, by, 110, bh, QLHS_CMD_CALIBRATE_CLEAR, L"Clear", false});
+    pg.buttons.push_back({592, by, 90, bh, QLHS_CMD_CALIBRATE_CLEAR, L"Clear", false});
+  pg.buttons.push_back({s.calib_state == 2 ? 694 : 592, by, 220, bh, QLHS_CMD_RECALIBRATE, L"Force recalibrate", false});
   for (size_t i = 0; i < pg.buttons.size(); i++) {
     auto &b = pg.buttons[i];
     bool hov = (int)i == pg.hover;
@@ -316,7 +318,6 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
     if (b.cmd == QLHS_CMD_RECORD_OFF) p.Dot(b.x + 26, b.y + bh / 2, 6, col::red);
     p.Text(b.x + b.w / 2 + (b.cmd == QLHS_CMD_RECORD_OFF ? 10 : 0), b.y + 11, b.label, h2, col::text, 1);
   }
-  p.Text(W - 48, by + 14, L"Settings: steamvr.vrsettings → driver_questlhsync", small, col::faint, 2);
 }
 
 // 2x2 box filter + BGRX -> RGBA (alpha 255)

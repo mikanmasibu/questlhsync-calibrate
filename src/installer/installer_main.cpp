@@ -31,7 +31,7 @@ namespace fs = std::filesystem;
 static const int W = 960, H = 660;  // page size at 96 dpi
 static double g_k = 1;                      // dpi scale
 static const wchar_t *RELEASES = L"https://github.com/CreoleVR/QuestLHSync/releases";
-static const wchar_t *kVersion = L"1.16-calibrate";
+static const wchar_t *kVersion = L"1.26-calibrate";
 
 // ---------------------------------------------------------------- drawing (same look as the dashboard page)
 struct Canvas {
@@ -850,7 +850,7 @@ static void Install() {
       RunReg(L"removedriver", old);
       Say(L"Unregistered the older copy in " + old.wstring() + L" (its files are left as they are)");
     }
-    std::ofstream(g_state) << "{\"version\":\"1.16-calibrate\"}";
+    std::ofstream(g_state) << "{\"version\":\"1.26-calibrate\"}";
     SetProgress(100);
     Say(L"PC driver installed. Start SteamVR. The Quest or Frame app still comes from the original QuestLHSync release.",
         col::green);

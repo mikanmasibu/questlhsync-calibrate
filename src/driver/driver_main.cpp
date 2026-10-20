@@ -115,6 +115,9 @@ enum Kind { kUnknown = 0, kLighthouse = 1, kOther = 2, kHmd = 3 };
 static std::atomic<int> g_kind[vr::k_unMaxTrackedDeviceCount];
 static std::atomic<int> g_hmd{-1};             // the eligible HMD's index
 static std::atomic<bool> g_off{false};         // a wired headset: poses pass untouched
+static std::atomic<bool> g_hide{false};        // the headset is about to place the lighthouse devices
+static std::atomic<double> g_unplaced{0};      // when a controller or tracker first came while not placed (0: none)
+constexpr double kHideFor = 20;                // s from then, at most
 struct StationPose {
   char serial[32];
   int cls;
@@ -195,7 +198,17 @@ static bool Apply(uint32_t id, vr::DriverPose_t &p) {
     }
   }
   Xf x;
-  if (!ReadXf(x)) return false;
+  if (!ReadXf(x)) {
+    // not placed yet while the headset's cameras are about to: hidden, rather than shown metres away in SteamVR's own
+    // lighthouse universe and then snapped into place
+    if (d.cls == vr::TrackedDeviceClass_TrackingReference || !g_hide.load(std::memory_order_relaxed)) return false;
+    double now = QpcNow(), since = g_unplaced.load(std::memory_order_relaxed);
+    if (since == 0) g_unplaced.compare_exchange_strong(since, now);
+    else if (now - since > kHideFor) return false;
+    p.poseIsValid = false;
+    p.result = vr::TrackingResult_Running_OutOfRange;
+    return true;
+  }
   vr::HmdQuaternion_t xq{x.q.w, x.q.x, x.q.y, x.q.z};
   double wt[3];
   Rotate(xq, p.vecWorldFromDriverTranslation, wt);
@@ -224,7 +237,7 @@ static bool Apply(uint32_t id, vr::DriverPose_t &p) {
 
 using PoseFn = void (*)(void *, uint32_t, const vr::DriverPose_t &, uint32_t);
 static PoseFn g_orig[2];
-static void *g_target[2];
+static void *g_target[2], *g_detour[2];
 
 template <int I>
 static void Detour(void *self, uint32_t id, const vr::DriverPose_t &pose, uint32_t size) {
@@ -247,7 +260,26 @@ static void HookHost(const char *version, int i, void *detour) {
     return;
   }
   g_target[i] = fn;
+  g_detour[i] = detour;
   Log(Fmt("hooked %s::TrackedDevicePoseUpdated", version));
+}
+
+// takes the pose hooks out, each only while its function still jumps straight to our detour (MinHook's jmp to a relay
+// holding the detour's address): one another driver has hooked over since stays, passing poses on untouched, as taking
+// it out would take theirs with it
+static void UnhookHost() {
+  for (int j = 0; j < 2; j++) {
+    if (!g_target[j]) continue;
+    auto *p = (const uint8_t *)g_target[j];
+    const uint8_t *relay = p[0] == 0xE9 ? p + 5 + *(const int32_t *)(p + 1) : nullptr;
+    if (relay && relay[0] == 0xFF && relay[1] == 0x25 && *(const int32_t *)(relay + 2) == 0 &&
+        *(void *const *)(relay + 6) == g_detour[j]) {
+      MH_DisableHook(g_target[j]);
+      Log("pose hook taken out");
+    } else {
+      Log("another driver hooked SteamVR's pose updates after QuestLHSync: its hook stays, passing poses on untouched");
+    }
+  }
 }
 
 // ---------------------------------------------------------------- status shared memory
@@ -310,6 +342,7 @@ class Provider : public vr::IServerTrackedDeviceProvider {
     Log("QuestLHSync " QLHS_RELEASE " driver starting, data in %LOCALAPPDATA%\\QuestLHSync");
     SyncConfig cfg;
     cfg.dir = dir_;
+    cfg.per_headset = true;
     g_sync = std::make_unique<Sync>(cfg, [](const std::string &s) { Log(s); });
     g_calib = std::make_unique<Calibrator>(dir_ + "\\calib.json", [](const std::string &s) { Log(s); });
     g_calib->Load();
@@ -349,7 +382,7 @@ class Provider : public vr::IServerTrackedDeviceProvider {
   const char *const *GetInterfaceVersions() override { return vr::k_InterfaceVersions; }
 
   void RunFrame() override {
-    if (++tick_ % 45) return;  // classify devices about twice a second
+    if (wired_ || ++tick_ % 45) return;  // classify devices about twice a second
     auto *props = vr::VRProperties();
     for (uint32_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
       int kind = g_kind[i].load();
@@ -389,17 +422,20 @@ class Provider : public vr::IServerTrackedDeviceProvider {
         std::string actual = GetStr(c, vr::Prop_ActualTrackingSystemName_String);
         if (!actual.empty()) sys = actual;
         // Virtual Desktop names every headset newer than the Quest Pro "Meta Quest 3", ALVR the one it emulates (a
-        // Quest 2 unless set otherwise): neither name tells, so whichever headset answers is used
-        bool any = any_hmd_ || sys == "oculus_virtualdesktop" || sys == "alvr_server";
+        // Quest 2 unless set otherwise): neither name tells, so whichever headset answers is used (the one last used
+        // with that streamer first). Virtual Desktop's "Meta Quest Pro" is one, though, and a Steam Frame or another
+        // Quest left awake isn't used in its place
+        bool any = any_hmd_ || (sys == "oculus_virtualdesktop" && family != "Quest Pro") || sys == "alvr_server";
         if (family.empty() && !any && StreamerName(sys) == sys) {  // no streamer's driver: a headset on a cable
           SetWired(sys, model);
           g_kind[i] = kOther;
           continue;
         }
         if (!family.empty() || any) {
+          link_->SetFamily(any ? "" : family);  // before g_hmd: the link searches from then on
+          link_->SetStreamer(sys);
           g_hmd = (int)i;
           g_kind[i] = kHmd;
-          link_->SetFamily(any ? "" : family);
           std::lock_guard<std::mutex> g(hmd_m_);
           hmd_model_ = model.empty() ? "headset" : model;
           hmd_system_ = StreamerName(sys);
@@ -418,7 +454,7 @@ class Provider : public vr::IServerTrackedDeviceProvider {
     }
   }
 
-  // a headset that isn't streamed: nothing of QuestLHSync applies, and the dashboard closes
+  // a headset that isn't streamed: nothing of QuestLHSync applies, the worker stands down and the dashboard closes
   void SetWired(const std::string &sys, const std::string &model) {
     if (wired_.exchange(true)) return;
     g_off = true;
@@ -468,6 +504,7 @@ class Provider : public vr::IServerTrackedDeviceProvider {
   double last_gravity_ = 0;
   std::atomic<bool> wired_{false};  // SteamVR's headset is wired (not streamed): everything here stays off
   bool any_hmd_ = false, recording_ = false, overlay_started_ = false, calib_hold_ = false, steady_ = true, rel_done_ = true;
+  bool stood_down_ = false;  // the worker's, once wired: hooks out, search and levelling stopped
   int cmd_seen_ = 0;
   double started_ = 0, last_status_ = 0;
   Sync::Spots rec_spots_;  // when the recording started
@@ -617,6 +654,7 @@ class Provider : public vr::IServerTrackedDeviceProvider {
         if (calib_hold_) { calib_hold_ = false; g_sync->SetPaused(false); }
         if (g_calib) g_calib->Clear();
         break;
+      case QLHS_CMD_RECALIBRATE: g_sync->ForceRecalibrate(); break;
     }
   }
 
@@ -693,10 +731,27 @@ class Provider : public vr::IServerTrackedDeviceProvider {
     InterlockedIncrement((volatile LONG *)&t->seq);
   }
 
+  // a wired headset: the hooks come out, the headset search and levelling stop, as close to the add-on being off as
+  // a loaded driver gets
+  void StandDown() {
+    stood_down_ = true;
+    link_->Stop();
+    g_gravity->Stop();
+    g_rel->Unhook();
+    UnhookHost();
+  }
+
   void Worker() {
     started_ = QpcNow();
     while (run_) {
       double now = QpcNow();
+      if (wired_) {  // only the status goes on, which closes a dashboard already open
+        if (!stood_down_) StandDown();
+      g_hide.store(false);
+        if (now - last_status_ >= 0.25) { last_status_ = now; Publish(now); }
+        Sleep(50);
+        continue;
+      }
       link_->SetWanted(g_hmd.load() >= 0);
       Stations();
       Commands();
@@ -704,7 +759,10 @@ class Provider : public vr::IServerTrackedDeviceProvider {
         calib_hold_ = false;
         g_sync->SetPaused(false);
       }
-      WriteXf(g_sync->Tick(now));
+      Transform xf = g_sync->Tick(now);
+      WriteXf(xf);
+      g_hide.store(!xf.active && link_->state() == HeadsetLink::kConnected);
+      if (xf.active) g_unplaced.store(0);
       if (now - last_gravity_ >= 1) {
         last_gravity_ = now;
         Gravity::Ref ref;

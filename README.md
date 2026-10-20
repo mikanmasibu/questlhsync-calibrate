@@ -9,6 +9,8 @@ It is built from two projects:
 
 Do not run SpaceSync, Space Calibrator, or another tool that also moves lighthouse devices. Two of them fight.
 
+Galaxy XR support in QuestLHSync is by [@stearnsbq](https://github.com/stearnsbq), with the [questlhsync-galaxy-xr](https://github.com/stearnsbq/questlhsync-galaxy-xr) headset module.
+
 The code in this repository is MIT, the same license as QuestLHSync. See [LICENSE](LICENSE).
 
 ## Install
@@ -21,6 +23,7 @@ The code in this repository is MIT, the same license as QuestLHSync. See [LICENS
 
 - Quest (Pro, 3 or 3S, rooted with Magisk): `QuestLHSync-quest-module-<version>.zip`
 - Steam Frame: `QuestLHSync-frame-installer.flatpak` or `QuestLHSync-frame-module-<version>.tar.gz`
+- Galaxy XR: the headset module from [questlhsync-galaxy-xr](https://github.com/stearnsbq/questlhsync-galaxy-xr)
 
 Follow the original install notes for the headset. The PC side of that release is not needed; this installer replaces it.
 
@@ -30,7 +33,7 @@ Wait until the dashboard says the alignment is locked and settled. Hold a tracke
 
 A correction larger than 8 degrees or 8 cm is rejected, as is a device that was not held on the headset.
 
-The PC driver follows QuestLHSync 1.16. Use the 1.16 headset package from the original release. A wired headset (Index, Vive, and other lighthouse headsets) turns this driver off. Base stations are held at the average of SteamVR's measurements (`steadyStations`, on by default). The installer sets SteamVR's `activateMultipleDrivers` to true so this driver loads beside the lighthouse driver.
+The PC driver follows QuestLHSync 1.26. Use the 1.26 headset package from the original release. A wired headset (Index, Vive, and other lighthouse headsets) turns this driver off. Base stations are held at the average of SteamVR's measurements (`steadyStations`, on by default). The installer sets SteamVR's `activateMultipleDrivers` to true so this driver loads beside the lighthouse driver. **Force recalibrate** drops the learned alignment and starts over. What each headset's cameras have seen is kept per headset.
 
 ## Building
 

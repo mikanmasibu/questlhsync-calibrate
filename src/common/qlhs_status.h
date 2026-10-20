@@ -8,7 +8,7 @@
 #define QLHS_OVERLAY_MUTEX L"Local\\QuestLHSyncOverlay"
 #define QLHS_MAGIC 0x53484C51u  // "QLHS"
 #define QLHS_VERSION 3
-#define QLHS_RELEASE "1.16"  // magisk/build_module.py reads it
+#define QLHS_RELEASE "1.26"  // magisk/build_module.py reads it
 
 enum QlhsState : int32_t {
   QLHS_STARTING = 0,
@@ -33,6 +33,7 @@ enum QlhsCmd : int32_t {
   QLHS_CMD_CALIBRATE = 6,
   QLHS_CMD_CALIBRATE_CANCEL = 7,
   QLHS_CMD_CALIBRATE_CLEAR = 8,
+  QLHS_CMD_RECALIBRATE = 9,  // drop every learned and saved alignment of this headset and start over
 };
 
 #pragma pack(push, 8)
